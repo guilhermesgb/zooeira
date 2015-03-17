@@ -53,17 +53,17 @@ def prepare_and_send_request(ip, port, \
         payload=payload, headers=headers)
     return response
 
-def atomic_diffusion(sender_ip, sender_port, message, group):
+def atomic_diffusion(sender_ip, sender_port, message, group, loopback):
 
     logging.info('Processing atomic diffusion from %s:%d' % (sender_ip, sender_port))
 
     for server_address in group:
         dest_ip = server_address[0]
         dest_port = server_address[1]
-        if ( sender_ip == dest_ip and sender_port == dest_port ):
+        if ( sender_ip == dest_ip
+          and sender_port == dest_port
+          and not loopback ):
             continue
-#        if ( message['os_ip'] == dest_ip and message['os_port'] == dest_port ):
-#            continue
         logging.info('Relaying message from %s:%d to %s:%d...' % (
             sender_ip, sender_port, dest_ip, dest_port
         ))
@@ -113,11 +113,9 @@ def send_message():
 
     servers_group = get_servers()
     p = Process(target=atomic_diffusion, args=(IP, PORT,
-      message_data, servers_group))
+      message_data, servers_group, True))
     p.daemon = True
     p.start()
-#    p.join()
-#    atomic_diffusion(IP, PORT, message_data, servers_group)
     return make_response(json.dumps({'server':'message sent', 'code':'ok'}), 200)
 
 @app.route('/receive', methods=['POST'])
@@ -158,20 +156,21 @@ def receive_message():
         return make_response(json.dumps({'server':'message original sender port missing', 'code':'error'}), 200)
     message_os_port = int(message_os_port)
 
-    logging.info('Received message %s from %s:%d!' % (message, message_os_ip, message_os_port))
-
-    message_data = {
-        'message': message,
-        'os_ip': message_os_ip,
-        'os_port': message_os_port,
-        'id': message_id
-    }
-
-    servers_group = get_servers()
     if ( not message_id in received_messages ):
+
         received_messages[message_id] = message
+        logging.info('Received message %s from %s:%d!' % (message, message_os_ip, message_os_port))
+
         if ( not (IP == message_os_ip and PORT == message_os_port) ):
-            atomic_diffusion(IP, PORT, message_data, servers_group)
+            servers_group = get_servers()
+            message_data = {
+                'message': message,
+                'os_ip': message_os_ip,
+                'os_port': message_os_port,
+                'id': message_id
+            }
+            atomic_diffusion(IP, PORT, message_data, servers_group, False)
+
         processed_messages[message_id] = message
     return make_response(json.dumps({'server':'message received', 'code':'ok'}), 200)
 
