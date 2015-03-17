@@ -53,14 +53,13 @@ def prepare_and_send_request(ip, port, \
         payload=payload, headers=headers)
     return response
 
-def atomic_diffusion(sender_ip, sender_port, message):
+def atomic_diffusion(sender_ip, sender_port, message, group):
 
     logging.info('Processing atomic diffusion from %s:%d' % (sender_ip, sender_port))
 
-    dests = get_servers()
-    for dest in dests:
-        dest_ip = dest[0]
-        dest_port = dest[1]
+    for server_address in group:
+        dest_ip = server_address[0]
+        dest_port = server_address[1]
         if ( sender_ip == dest_ip and sender_port == dest_port ):
             continue
 #        if ( message['os_ip'] == dest_ip and message['os_port'] == dest_port ):
@@ -112,11 +111,13 @@ def send_message():
         'id': str(int(time.time() * 1000000)).replace("L", "")
     }
 
-#    p = Process(target=atomic_diffusion, args=(IP, PORT, message_data))
-#    p.daemon = True
-#    p.start()
+    servers_group = get_servers()
+    p = Process(target=atomic_diffusion, args=(IP, PORT,
+      message_data, servers_group))
+    p.daemon = True
+    p.start()
 #    p.join()
-    atomic_diffusion(IP, PORT, message_data)
+#    atomic_diffusion(IP, PORT, message_data, servers_group)
     return make_response(json.dumps({'server':'message sent', 'code':'ok'}), 200)
 
 @app.route('/receive', methods=['POST'])
@@ -166,14 +167,11 @@ def receive_message():
         'id': message_id
     }
 
+    servers_group = get_servers()
     if ( not message_id in received_messages ):
         received_messages[message_id] = message
         if ( not (IP == message_os_ip and PORT == message_os_port) ):
-#            p = Process(target=atomic_diffusion, args=(IP, PORT, message_data))
-#            p.daemon = True
-#            p.start()
-#            p.join()
-            atomic_diffusion(IP, PORT, message_data)
+            atomic_diffusion(IP, PORT, message_data, servers_group)
         processed_messages[message_id] = message
     return make_response(json.dumps({'server':'message received', 'code':'ok'}), 200)
 
