@@ -168,7 +168,7 @@ def receive_message():
 
     if ( not message_id in received_messages ):
         received_messages[message_id] = message
-#        if ( not (IP == message_os_ip and PORT == message_os_port) ):
+        if ( not (IP == message_os_ip and PORT == message_os_port) ):
 #            p = Process(target=atomic_diffusion, args=(IP, PORT, message_data))
 #            p.daemon = True
 #            p.start()
