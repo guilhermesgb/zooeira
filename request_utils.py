@@ -31,16 +31,16 @@ def send_request(method, url, payload=None, headers=None, reattempt=0):
         r = s.prepare_request(request)
 
     try:
-        response = s.send(r, verify=False, timeout=1)
-    except Timeout, SSLError:
-        if reattempt < 3:
+        response = s.send(r, verify=False, timeout=15)
+    except (Timeout, SSLError) as e:
+        if reattempt < 10:
             return send_request(method, url, payload,
               reattempt=reattempt + 1)
         else:
             return {
-                'failure': 'timeout or ssl error',
+                'failure': 'could not send request',
                 'code': -1,
-                'content': 'N/A (Error)'
+                'content': '{%s}' % str(e)
             }
 
     return {

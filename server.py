@@ -14,9 +14,11 @@ app = Flask(__name__)
 zk = KazooClient(string.join(ZOOKEEPER_ADDRESSES, ','))
 ZNODE_SERVERS = '/server'
 ZNODE_SERVER_PREFIX = '/s-'
+ZNODE_MESSAGES = '/messages'
+ZNODE_MESSAGE_PREFIX = '/m-'
 
 received_messages = {}
-processed_messages = {} #has to be consistent among all servers
+processed_messages = [] #has to be consistent among all servers
 
 def zk_state_listener(state):
     if state == KazooState.LOST:
@@ -104,11 +106,16 @@ def send_message():
     if message is None:
         return make_response(json.dumps({'server':'message missing', 'code':'error'}), 200)
 
+    fullpath = zk.create(ZNODE_MESSAGES + ZNODE_MESSAGE_PREFIX,
+      value=json.dumps(message), sequence=True)
+    message_id = zk.get(os.path.join(ZNODE_MESSAGES,
+      fullpath))[1].creation_transaction_id
+
     message_data = {
         'message': message,
         'os_ip': IP,
         'os_port': PORT,
-        'id': str(int(time.time() * 1000000)).replace("L", "")
+        'id': message_id
     }
 
     servers_group = get_servers()
@@ -171,7 +178,7 @@ def receive_message():
             }
             atomic_diffusion(IP, PORT, message_data, servers_group, False)
 
-        processed_messages[message_id] = message
+        processed_messages.append(message_data)
     return make_response(json.dumps({'server':'message received', 'code':'ok'}), 200)
 
 
@@ -191,4 +198,5 @@ if __name__ == "__main__":
       value=json.dumps(settings), ephemeral=True,
       sequence=True, makepath=True)
 
+    zk.ensure_path(ZNODE_MESSAGES)
     app.run(host="0.0.0.0", port=PORT, debug=True)
