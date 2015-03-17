@@ -55,7 +55,7 @@ def prepare_and_send_request(ip, port, \
         payload=payload, headers=headers)
     return response
 
-def atomic_diffusion(sender_ip, sender_port, message, group, loopback):
+def atomic_diffusion(sender_ip, sender_port, message, group, loopback=False, deliver=False):
 
     logging.info('Processing atomic diffusion from %s:%d' % (sender_ip, sender_port))
 
@@ -72,6 +72,10 @@ def atomic_diffusion(sender_ip, sender_port, message, group, loopback):
         response = prepare_and_send_request(dest_ip, dest_port, 'POST',
           '/receive', payload=message)
         logging.info('response status: %s (%s)' % (response['code'], response['content']))
+
+    if deliver:
+        processed_messages.append(message)
+
 
 @app.route('/', methods=['GET', 'POST'])
 def index():
@@ -120,7 +124,7 @@ def send_message():
 
     servers_group = get_servers()
     p = Process(target=atomic_diffusion, args=(IP, PORT,
-      message_data, servers_group, True))
+      message_data, servers_group, True, False))
     p.daemon = True
     p.start()
     return make_response(json.dumps({'server':'message sent', 'code':'ok'}), 200)
@@ -169,16 +173,18 @@ def receive_message():
         logging.info('Received message %s from %s:%d!' % (message, message_os_ip, message_os_port))
 
         if ( not (IP == message_os_ip and PORT == message_os_port) ):
-            servers_group = get_servers()
             message_data = {
                 'message': message,
                 'os_ip': message_os_ip,
                 'os_port': message_os_port,
                 'id': message_id
             }
-            atomic_diffusion(IP, PORT, message_data, servers_group, False)
+            servers_group = get_servers()
+            p = Process(target=atomic_diffusion, args=(IP, PORT,
+              message_data, servers_group, True, True))
+            p.daemon = True
+            p.start()
 
-        processed_messages.append(message_data)
     return make_response(json.dumps({'server':'message received', 'code':'ok'}), 200)
 
 
