@@ -1,4 +1,6 @@
 from flask import Flask, request, make_response
+from flask.ext.sqlalchemy import SQLAlchemy, Session
+#from sqlalchemy.orm.exc import NoResultFound, MultipleResultsFound
 from kazoo.client import KazooClient
 from kazoo.protocol.states import KazooState
 from kazoo.exceptions import NoNodeError
@@ -11,6 +13,10 @@ import os, string, json, time, logging, socket
 logging.basicConfig(level=logging.DEBUG)
 
 app = Flask(__name__)
+app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get(
+    'DATABASE_URL', 'postgresql:///local_database')
+db = SQLAlchemy(app)
+
 zk = KazooClient(string.join(ZOOKEEPER_ADDRESSES, ','))
 ZNODE_SERVERS = '/server'
 ZNODE_SERVER_PREFIX = '/s-'
@@ -18,7 +24,21 @@ ZNODE_MESSAGES = '/messages'
 ZNODE_MESSAGE_PREFIX = '/m-'
 
 received_messages = {}
-processed_messages = [] #has to be consistent among all servers
+
+#processed messages are consistent among all servers
+class ProcessedMessage(db.Model):
+
+    __tablename__ = 'processed-messages'
+    id = db.Column(db.Integer, primary_key=True)
+    mid = db.Column(db.BigInteger, unique=True)
+    message = db.Column(db.Text)
+
+    def __init__(self, mid, message):
+        self.mid = mid
+        self.message = message
+
+    def __repr__(self):
+        return "ProcessedMessage %s" % self.mid
 
 def zk_state_listener(state):
     if state == KazooState.LOST:
@@ -55,7 +75,7 @@ def prepare_and_send_request(ip, port, \
         payload=payload, headers=headers)
     return response
 
-def atomic_diffusion(sender_ip, sender_port, message, group, loopback=False, deliver=False):
+def atomic_diffusion(sender_ip, sender_port, message, group, loopback, deliver):
 
     logging.info('Processing atomic diffusion from %s:%d' % (sender_ip, sender_port))
 
@@ -74,15 +94,24 @@ def atomic_diffusion(sender_ip, sender_port, message, group, loopback=False, del
         logging.info('response status: %s (%s)' % (response['code'], response['content']))
 
     if deliver:
-        processed_messages.append(message)
-
+        logging.info('Storing processed message [%s]: %s' % (message['id'], message['message']))
+        db.session.add(ProcessedMessage(message['id'], message['message']))
+        db.session.commit()
 
 @app.route('/', methods=['GET', 'POST'])
 def index():
-    payload = { 'received': received_messages,
-                'processed': processed_messages
+
+    messages = []
+    for entry in ProcessedMessage\
+      .query.order_by(ProcessedMessage.mid).all():
+        messages.append({
+            'id': entry.mid,
+            'message': entry.message
+        })
+    payload = {
+        'server': 'retrieved all processed messages',
+        'messages': messages
     }
-    payload['server'] = 'received and processed messages retrieved'
     return make_response(json.dumps(payload), 200)
 
 @app.route('/send', methods=['POST'])
@@ -185,6 +214,12 @@ def receive_message():
             p.daemon = True
             p.start()
 
+        else:
+            logging.info('Storing processed message [%s]: %s' % (message_data['id'], message_data['message']))
+            db.session.add(ProcessedMessage(
+              message_data['id'], message_data['message']))
+            db.session.commit()
+
     return make_response(json.dumps({'server':'message received', 'code':'ok'}), 200)
 
 
@@ -205,4 +240,7 @@ if __name__ == "__main__":
       sequence=True, makepath=True)
 
     zk.ensure_path(ZNODE_MESSAGES)
+
+    db.create_all()
+
     app.run(host="0.0.0.0", port=PORT, debug=True)
