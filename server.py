@@ -1,8 +1,7 @@
 from flask import Flask, request, make_response
 from flask.ext.sqlalchemy import SQLAlchemy, Session
-#from sqlalchemy.orm.exc import NoResultFound, MultipleResultsFound
 from kazoo.client import KazooClient
-from kazoo.protocol.states import KazooState
+from kazoo.protocol.states import KazooState, EventType, KeeperState
 from kazoo.exceptions import NoNodeError
 from config import *
 from random import shuffle
@@ -10,6 +9,10 @@ from request_utils import send_request
 from multiprocessing import Process
 
 import os, string, json, time, logging, socket
+try:
+    import uwsgi
+except:
+    pass
 logging.basicConfig(level=logging.DEBUG)
 
 app = Flask(__name__)
@@ -22,7 +25,12 @@ ZNODE_SERVERS = '/server'
 ZNODE_SERVER_PREFIX = '/s-'
 ZNODE_MESSAGES = '/message'
 ZNODE_MESSAGE_PREFIX = '/m-'
+CURRENT_SERVER_ZNODE = None
+IP = None
+PORT = None
 
+KNOWN_SERVERS_LIST = []
+IS_LEADER = False
 received_messages = {}
 
 #processed messages are consistent among all servers
@@ -40,16 +48,23 @@ class ProcessedMessage(db.Model):
     def __repr__(self):
         return "ProcessedMessage %s" % self.mid
 
+previous_state = None
 def zk_state_listener(state):
+    global previous_state
+
     if state == KazooState.LOST:
-        #connection lost, should kill? or try to connect again?
-        pass
+        logging.info('Connection to ZooKeeper lost')
     elif state == KazooState.SUSPENDED:
-        #disconnected, should kill this server then
-        pass
+        logging.info('Connection to ZooKeeper suspended')
     else:
-        #connected, that's great, tell others I'm a new guy in town
-        pass
+        logging.info('Connection to ZooKeeper (re)established')
+        if previous_state == None\
+          and state == KazooState.CONNECTED:
+            pass
+        else:
+            zk.handler.spawn(prepare_server)
+    previous_state = state
+
 zk.add_listener(zk_state_listener)
 
 def get_servers():
@@ -67,6 +82,7 @@ def get_servers():
 
 def prepare_and_send_request(ip, port, \
   method, endpoint, payload=None):
+
     headers = {
         "Content-Type": "application/json",
         "Accept": "application/json"
@@ -112,6 +128,7 @@ def index():
         'server': 'retrieved all processed messages',
         'messages': messages
     }
+    payload['leader'] = IS_LEADER
     return make_response(json.dumps(payload), 200)
 
 @app.route('/send', methods=['POST'])
@@ -146,7 +163,7 @@ def send_message():
 
     message_data = {
         'message': message,
-        'os_ip': IP,
+	'os_ip': IP,
         'os_port': PORT,
         'id': message_id
     }
@@ -222,24 +239,41 @@ def receive_message():
 
     return make_response(json.dumps({'server':'message received', 'code':'ok'}), 200)
 
+def close_zk_connection():
+    logging.info('Stopping connection to ZooKeeper')
+    zk.stop()
+    zk.close()
+    logging.info('Stopped connection to ZooKeeper')
+try:
+    uwsgi.atexit = close_zk_connection
+except:
+    pass
 
-if __name__ == "__main__":
+def send_presence_to_zk():
+    global IP, PORT, CURRENT_SERVER_ZNODE
 
     IP = os.environ.get("IP", None)
-    if ( IP is None ):
+    PORT = int(os.environ.get("PORT", 3031))
+    if ( IP is None or PORT is None ):
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         s.connect(('8.8.8.8', 80))
-        IP = s.getsockname()[0]
+        data = s.getsockname()
+        IP = data[0]
         s.close()
-    PORT = int(os.environ.get("PORT", 5000))
     settings = {'ip': IP, 'port': PORT}
 
-    zk.start()
-    zk.create(ZNODE_SERVERS + ZNODE_SERVER_PREFIX,
-      value=json.dumps(settings), ephemeral=True,
-      sequence=True, makepath=True)
-
+    zk.ensure_path(ZNODE_SERVERS)
+    if CURRENT_SERVER_ZNODE is not None:
+        zk.delete(ZNODE_SERVERS + CURRENT_ZNODE_SERVER)
+    CURRENT_SERVER_ZNODE = zk.create(ZNODE_SERVERS + ZNODE_SERVER_PREFIX,
+      value=json.dumps(settings), ephemeral=True, sequence=True)
+    CURRENT_SERVER_ZNODE = CURRENT_SERVER_ZNODE.replace(ZNODE_SERVERS, "")
     zk.ensure_path(ZNODE_MESSAGES)
+
+def prepare_server():
+
+    logging.info('Preparing server...')
+    send_presence_to_zk()
 
     logging.info('Loading messages processed before shutdown')
     db.create_all()
@@ -248,13 +282,70 @@ if __name__ == "__main__":
         received_messages[entry.mid] = entry.message
 
     logging.info('Synchronizing processed messages with ZooKeeper messages log')
-    znodes = zk.get_children(ZNODE_MESSAGES)
-    for znode in znodes:
-        data = zk.get(ZNODE_MESSAGES + '/' + znode)
+    message_znodes = zk.get_children(ZNODE_MESSAGES)
+    message_znodes = list(set(message_znodes))
+    for message_znode in message_znodes:
+        data = zk.get(ZNODE_MESSAGES + '/' + message_znode)
         message = data[0]
         mid = data[1].creation_transaction_id
         if not mid in received_messages:
             db.session.add(ProcessedMessage(mid, message))
     db.session.commit()
-        
+
+    def determine_leader():
+
+        server_znodes = zk.get_children(ZNODE_SERVERS)
+        server_znodes = [ "/" + x for x in server_znodes ]
+        server_znodes = list(set(server_znodes))
+        seq_nums = [ int(x.replace(ZNODE_SERVER_PREFIX, "").strip())\
+          for x in server_znodes ]
+        seq_nums.sort()
+        current_seq_num = int(CURRENT_SERVER_ZNODE\
+          .replace(ZNODE_SERVER_PREFIX, "").strip())
+        seq_num_pos = seq_nums.index(current_seq_num)
+        if ( seq_num_pos == 0 ):
+            logging.info('This server is the leader')
+            def update_servers_list():
+                global KNOWN_SERVERS_LIST, IS_LEADER
+
+                def watch_callback(event):
+                    if event.type == EventType.CHILD:
+                        update_servers_list()
+
+                logging.info('Leader updating known servers list')
+                KNOWN_SERVERS_LIST = []
+                server_znodes = zk.get_children(ZNODE_SERVERS,\
+                  watch=watch_callback)
+                server_znodes = list(set(server_znodes))
+                for server_znode in server_znodes:
+                    data = json.loads(zk.get(ZNODE_SERVERS + '/'\
+                      + server_znode)[0])
+                    ip = data['ip']
+                    port = int(data['port'])
+                    KNOWN_SERVERS_LIST.append((ip, port))
+                shuffle(KNOWN_SERVERS_LIST)
+
+                logging.info('Leader letting other servers know it is leader')
+                IS_LEADER = True
+
+            update_servers_list()
+        else:
+            logging.info('This server is not the leader, watching out for leader failures')
+            def watch_callback(event):
+                if event.type == EventType.DELETED \
+                  and ( event.state == KeeperState.CONNECTED
+                  or event.state == KeeperState.CONNECTED_RO
+                  or event.state == KeeperState.CONNECTING ):
+                    logging.info('It\'s about time to determine the new leader')
+                    determine_leader()
+
+            zk.get(ZNODE_SERVERS + ZNODE_SERVER_PREFIX\
+              + ('%010d' % seq_nums[seq_num_pos - 1]), watch=watch_callback)
+
+    logging.info('Determining the leader among all servers')
+    determine_leader()
+
+zk.start()
+prepare_server()
+if __name__ == "__main__":
     app.run(host="0.0.0.0", port=PORT, debug=True)
