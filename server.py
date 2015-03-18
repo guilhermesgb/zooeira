@@ -57,11 +57,9 @@ def zk_state_listener(state):
     elif state == KazooState.SUSPENDED:
         logging.info('Connection to ZooKeeper suspended')
     else:
-        logging.info('Connection to ZooKeeper (re)established')
-        if previous_state == None\
+        if previous_state in (None, KazooState.LOST, KazooState.SUSPENDED) \
           and state == KazooState.CONNECTED:
-            pass
-        else:
+            logging.info('Connection to ZooKeeper (re)established')
             zk.handler.spawn(prepare_server)
     previous_state = state
 
@@ -129,6 +127,8 @@ def index():
         'messages': messages
     }
     payload['leader'] = IS_LEADER
+    if IS_LEADER:
+        payload['known_servers'] = KNOWN_SERVERS_LIST
     return make_response(json.dumps(payload), 200)
 
 @app.route('/send', methods=['POST'])
@@ -346,6 +346,5 @@ def prepare_server():
     determine_leader()
 
 zk.start()
-prepare_server()
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=PORT, debug=True)
