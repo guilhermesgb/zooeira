@@ -20,7 +20,7 @@ db = SQLAlchemy(app)
 zk = KazooClient(string.join(ZOOKEEPER_ADDRESSES, ','))
 ZNODE_SERVERS = '/server'
 ZNODE_SERVER_PREFIX = '/s-'
-ZNODE_MESSAGES = '/messages'
+ZNODE_MESSAGES = '/message'
 ZNODE_MESSAGE_PREFIX = '/m-'
 
 received_messages = {}
@@ -140,7 +140,7 @@ def send_message():
         return make_response(json.dumps({'server':'message missing', 'code':'error'}), 200)
 
     fullpath = zk.create(ZNODE_MESSAGES + ZNODE_MESSAGE_PREFIX,
-      value=json.dumps(message), sequence=True)
+      value=str(message), sequence=True)
     message_id = zk.get(os.path.join(ZNODE_MESSAGES,
       fullpath))[1].creation_transaction_id
 
@@ -241,6 +241,20 @@ if __name__ == "__main__":
 
     zk.ensure_path(ZNODE_MESSAGES)
 
+    logging.info('Loading messages processed before shutdown')
     db.create_all()
+    for entry in ProcessedMessage\
+      .query.order_by(ProcessedMessage.mid).all():
+        received_messages[entry.mid] = entry.message
 
+    logging.info('Synchronizing processed messages with ZooKeeper messages log')
+    znodes = zk.get_children(ZNODE_MESSAGES)
+    for znode in znodes:
+        data = zk.get(ZNODE_MESSAGES + '/' + znode)
+        message = data[0]
+        mid = data[1].creation_transaction_id
+        if not mid in received_messages:
+            db.session.add(ProcessedMessage(mid, message))
+    db.session.commit()
+        
     app.run(host="0.0.0.0", port=PORT, debug=True)

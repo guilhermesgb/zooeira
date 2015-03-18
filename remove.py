@@ -7,3 +7,4 @@ zk.start()
 
 children = zk.get_children('/server')
 zk.delete('/server', recursive=True)
+zk.delete('/message', recursive=True)
