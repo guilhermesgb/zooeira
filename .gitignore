@@ -2,3 +2,4 @@
 log
 *.sh
 !start.sh
+!dbsetup.sh
