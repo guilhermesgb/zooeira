@@ -83,18 +83,44 @@ class CurrentLeader(db.Model):
     def __repr__(self):
         return "CurrentLeader %s:%d" % (self.ip, self.port)
 
-def get_servers():
+def get_servers(action):
+    servers_group = []
 
-    dests = []
-    servers = zk.get_children(ZNODE_SERVERS)
-    for server in servers:
-        data = json.loads(zk.get(ZNODE_SERVERS + '/' + server)[0])
-        ip = data['ip']
-        port = int(data['port'])
-        dests.append((ip, port))
-    dests = list(set(dests))
-    shuffle(dests)
-    return dests
+    logging.info('Retrieving current list of known servers....')
+    current_leader = None
+    try:
+        current_leader = CurrentLeader.query.all()[0]
+    except:
+        pass
+
+    if action == UPDATE_LEADER_ACTION or current_leader is None:
+        logging.info('....from ZooKeeper directly!! Reason: action==Leader? (%s) or NoLeader? (%s)' % (str(action == UPDATE_LEADER_ACTION), str(current_leader is None)))
+        servers = zk.get_children(ZNODE_SERVERS)
+        for server in servers:
+            data = json.loads(zk.get(ZNODE_SERVERS + '/' + server)[0])
+            ip = data['ip']
+            port = int(data['port'])
+            servers_group.append((ip, port))
+    elif IS_LEADER:
+        logging.info('....from itself, as it is Leader!!')
+        for server in KNOWN_SERVERS_LIST:
+            servers_group.append((server[0], int(server[1])))
+    else:
+        logging.info('....from the Current Leader!!')
+        response = prepare_and_send_request(current_leader.ip,
+          current_leader.port, 'POST', '/known_servers')
+        logging.info('response status: %s (%s)' % (response['code'], response['content']))
+        if response['code'] != 200:
+            return get_servers(UPDATE_LEADER_ACTION)
+        servers = json.loads(response['content'])['known_servers']
+        for server in servers:
+            ip = server['ip']
+            port = int(server['port'])
+            servers_group.append((ip, port))
+
+    servers_group = list(set(servers_group))
+    shuffle(servers_group)
+    return servers_group
 
 def prepare_and_send_request(ip, port, \
   method, endpoint, payload=None):
@@ -136,16 +162,16 @@ def atomic_diffusion(sender_ip, sender_port, message, group, loopback, deliver):
 @app.route('/', methods=['GET', 'POST'])
 def index():
 
-#    messages = []
-#    for entry in ProcessedMessage\
-#      .query.order_by(ProcessedMessage.mid).all():
-#        messages.append({
-#            'id': entry.mid,
-#            'message': json.loads(entry.message)
-#        })
+    messages = []
+    for entry in ProcessedMessage\
+      .query.order_by(ProcessedMessage.mid).all():
+        messages.append({
+            'id': entry.mid,
+            'message': json.loads(entry.message)
+        })
     payload = {
-        'server': 'retrieved all processed messages'#,
-#        'messages': messages
+        'server': 'retrieved all processed messages',
+        'messages': messages
     }
     payload['leader'] = IS_LEADER
     if IS_LEADER:
@@ -157,6 +183,20 @@ def index():
     except:
         pass
     return make_response(json.dumps(payload), 200)
+
+@app.route('/known_servers', methods=['POST'])
+def get_known_servers():
+
+    servers = []
+    for server in KNOWN_SERVERS_LIST:
+        servers.append({
+            'ip': server[0],
+            'port': server[1]
+        })
+    response = {
+        'known_servers': servers
+    }
+    return make_response(json.dumps(response), 200)
 
 @app.route(BROADCAST_MESSAGE_ACTION, methods=['POST'])
 def do_broadcast():
@@ -214,7 +254,7 @@ def send_message(message):
         'id': message_id
     }
 
-    servers_group = get_servers()
+    servers_group = get_servers(message['action'])
     p = Process(target=atomic_diffusion, args=(IP, PORT,
       message_data, servers_group, True, False))
     p.daemon = True
@@ -270,7 +310,7 @@ def receive_message():
                 'os_port': message_os_port,
                 'id': message_id
             }
-            servers_group = get_servers()
+            servers_group = get_servers(message['action'])
             p = Process(target=atomic_diffusion, args=(IP, PORT,
               message_data, servers_group, True, True))
             p.daemon = True
