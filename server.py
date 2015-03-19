@@ -1,5 +1,5 @@
 from flask import Flask, request, make_response
-from flask.ext.sqlalchemy import SQLAlchemy, Session
+from flask.ext.sqlalchemy import SQLAlchemy
 from kazoo.client import KazooClient
 from kazoo.protocol.states import KazooState, EventType, KeeperState
 from kazoo.exceptions import NoNodeError
