@@ -8,7 +8,7 @@ from random import shuffle
 from request_utils import send_request
 from multiprocessing import Process
 
-import os, string, json, time, logging, socket
+import os, string, json, time, logging, socket, heapq
 try:
     import uwsgi
 except:
@@ -29,12 +29,30 @@ ZNODE_MESSAGE_PREFIX = '/m-'
 CURRENT_SERVER_ZNODE = None #This server's server_znode path
 IP = None #This server's IP
 PORT = None #This server's port
-LEADER_IP = None #The IP of current leader
-LEADER_PORT = None #The port of current leader
 IS_LEADER = False #If this server is currently the leader
 KNOWN_SERVERS_LIST = [] #If this is the leader, the list of all known servers
 
 RECEIVED_MESSAGES = {}
+
+BROADCAST_MESSAGE_ACTION = '/broadcast'
+UPDATE_LEADER_ACTION = '/leader'
+
+def handle_broadcast(data):
+    pass
+
+def handle_leader_update(data):
+
+    leader_ip = data['leader_ip']
+    leader_port = data['leader_port']
+    CurrentLeader.query.delete()
+    db.session.add(CurrentLeader(leader_ip, leader_port))
+    db.session.commit()
+    logging.info('Leader updated: %s:%d' % (leader_ip, leader_port))
+
+action_handlers = {
+    BROADCAST_MESSAGE_ACTION: handle_broadcast,
+    UPDATE_LEADER_ACTION: handle_leader_update
+}
 
 #processed messages are consistent among all servers
 class ProcessedMessage(db.Model):
@@ -50,6 +68,20 @@ class ProcessedMessage(db.Model):
 
     def __repr__(self):
         return "ProcessedMessage %s" % self.mid
+
+class CurrentLeader(db.Model):
+
+    __tablename__ = 'current-leader'
+    id = db.Column(db.Integer, primary_key=True)
+    ip = db.Column(db.Text)
+    port = db.Column(db.Integer)
+
+    def __init__(self, ip, port):
+        self.ip = ip
+        self.port = port
+
+    def __repr__(self):
+        return "CurrentLeader %s:%d" % (self.ip, self.port)
 
 def get_servers():
 
@@ -97,39 +129,46 @@ def atomic_diffusion(sender_ip, sender_port, message, group, loopback, deliver):
         logging.info('Storing processed message [%s]: %s' % (message['id'], json.dumps(message['message'])))
         db.session.add(ProcessedMessage(message['id'], json.dumps(message['message'])))
         db.session.commit()
+        message = message['message']
+        action_handlers[message['action']](message['data'])
+
 
 @app.route('/', methods=['GET', 'POST'])
 def index():
 
-    messages = []
-    for entry in ProcessedMessage\
-      .query.order_by(ProcessedMessage.mid).all():
-        messages.append({
-            'id': entry.mid,
-            'message': json.loads(entry.message)
-        })
+#    messages = []
+#    for entry in ProcessedMessage\
+#      .query.order_by(ProcessedMessage.mid).all():
+#        messages.append({
+#            'id': entry.mid,
+#            'message': json.loads(entry.message)
+#        })
     payload = {
-        'server': 'retrieved all processed messages',
-        'messages': messages
+        'server': 'retrieved all processed messages'#,
+#        'messages': messages
     }
     payload['leader'] = IS_LEADER
     if IS_LEADER:
         payload['known_servers'] = KNOWN_SERVERS_LIST
+    try:
+        current_leader = CurrentLeader.query.all()[0]
+        payload['leader_ip'] = current_leader.ip
+        payload['leader_port'] = current_leader.port
+    except:
+        pass
     return make_response(json.dumps(payload), 200)
 
-@app.route('/send', methods=['POST'])
-def send_message():
-
-    logging.info('Processing /send endpoint')
+@app.route(BROADCAST_MESSAGE_ACTION, methods=['POST'])
+def do_broadcast():
 
     try:
-        message_data = request.json
-        if ( message_data == None ):
+        broadcast_data = request.json
+        if ( broadcast_data == None ):
             response = make_response(json.dumps({'server':'payload must be valid json', 'code':'error'}), 200)
             response.headers["Content-Type"] = "application/json"
             return response
-        message_data = dict(message_data)
-        if ( message_data == None ):
+        broadcast_data = dict(broadcast_data)
+        if ( broadcast_data == None ):
             response = make_response(json.dumps({'server':'payload must be valid json', 'code':'error'}), 200)
             response.headers["Content-Type"] = "application/json"
             return response
@@ -138,10 +177,31 @@ def send_message():
         response.headers["Content-Type"] = "application/json"
         return response
 
-    message = message_data.get('message', None)
-    if message is None:
-        return make_response(json.dumps({'server':'message missing', 'code':'error'}), 200)
+    broadcast_message = broadcast_data.get('message', None)
+    if broadcast_message is None:
+        return make_response(json.dumps({'server':'broadcast \'message\' payload missing', 'code':'error'}), 200)
 
+    send_message({
+        'action': BROADCAST_MESSAGE_ACTION,
+        'data': {
+            'message': broadcast_message
+        }
+    })
+    return make_response(json.dumps({'server': 'broadcast sent', 'code': 'ok'}), 200)
+
+def do_notify_is_leader(leader_ip, leader_port):
+
+    send_message({
+        'action': UPDATE_LEADER_ACTION,
+        'data': {
+            'leader_ip': leader_ip,
+            'leader_port': leader_port
+        }
+    })
+
+def send_message(message):
+
+    logging.info('Processing send_message')
     fullpath = zk.create(ZNODE_MESSAGES + ZNODE_MESSAGE_PREFIX,
       value=json.dumps(message), sequence=True)
     message_id = zk.get(os.path.join(ZNODE_MESSAGES,
@@ -159,7 +219,6 @@ def send_message():
       message_data, servers_group, True, False))
     p.daemon = True
     p.start()
-    return make_response(json.dumps({'server':'message sent', 'code':'ok'}), 200)
 
 @app.route('/receive', methods=['POST'])
 def receive_message():
@@ -184,7 +243,7 @@ def receive_message():
 
     message = message_data.get('message', None)
     if message is None:
-        return make_response(json.dumps({'server':'message missing', 'code':'error'}), 200)
+        return make_response(json.dumps({'server':'message payload missing', 'code':'error'}), 200)
 
     message_id = message_data.get('id', None)
     if message_id is None:
@@ -222,6 +281,8 @@ def receive_message():
             db.session.add(ProcessedMessage(
               message_data['id'], json.dumps(message_data['message'])))
             db.session.commit()
+            message = message_data['message']
+            action_handlers[message['action']](message['data'])
 
     return make_response(json.dumps({'server':'message received', 'code':'ok'}), 200)
 
@@ -312,6 +373,7 @@ def determine_leader():
 
             logging.info('Leader letting other servers know it is leader')
             IS_LEADER = True
+            do_notify_is_leader(IP, PORT)
 
         update_servers_list()
     else:
@@ -334,13 +396,17 @@ def prepare_server():
     logging.info('Preparing server...')
     send_presence_to_zk()
 
-    logging.info('Loading messages processed before shutdown')
     db.create_all()
-    for entry in ProcessedMessage\
-      .query.order_by(ProcessedMessage.mid).all():
-        RECEIVED_MESSAGES[entry.mid] = json.loads(entry.message)
 
     logging.info('Synchronizing processed messages with ZooKeeper messages log')
+    messages = []
+
+    for entry in ProcessedMessage\
+      .query.order_by(ProcessedMessage.mid).all():
+        message = json.loads(entry.message)
+        heapq.heappush(messages, (entry.mid, message))
+        RECEIVED_MESSAGES[entry.mid] = message
+
     message_znodes = zk.get_children(ZNODE_MESSAGES)
     message_znodes = list(set(message_znodes))
     for message_znode in message_znodes:
@@ -349,8 +415,14 @@ def prepare_server():
         mid = data[1].creation_transaction_id
         if not mid in RECEIVED_MESSAGES:
             db.session.add(ProcessedMessage(mid, message))
-            RECEIVED_MESSAGES[mid] = json.loads(message)
+            message = json.loads(message)
+            heapq.heappush(messages, (mid, message))
+            RECEIVED_MESSAGES[mid] = message
     db.session.commit()
+
+    while len(messages) > 0:
+        message = heapq.heappop(messages)[1]
+        action_handlers[message['action']](message['data'])
 
     logging.info('Determining the leader among all servers')
     determine_leader()
