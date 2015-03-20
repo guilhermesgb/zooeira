@@ -1,5 +1,6 @@
 *.pyc
 log
 *.sh
-!start.sh
-!dbsetup.sh
+!setup.sh
+!start-server.sh
+!start-zookeeper.sh
