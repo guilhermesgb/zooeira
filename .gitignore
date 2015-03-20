@@ -4,3 +4,4 @@ log
 !setup.sh
 !start-server.sh
 !start-zookeeper.sh
+zookeeper/version-2/*
