@@ -1,15 +1,7 @@
 #!/bin/sh
-
-USER=ubuntu
-
-sudo apt-get install build-essential python-dev
-sudo apt-get install python-pip
-sudo apt-get install postgresql postgresql-contrib
-sudo apt-get install python-psycopg2
-sudo pip install flask
-sudo pip install Flask-SQLAlchemy
-sudo pip install kazoo
-sudo pip install requests
-sudo pip install uwsgi
-sudo -u postgres createuser $USER
+sudo apt-get update
+sudo apt-get install build-essential python-dev python-pip postgresql postgresql-contrib python-psycopg2 default-jre
+sudo pip install flask Flask-SQLAlchemy kazoo requests uwsgi
+sudo pip install --upgrade requests
+sudo -u postgres createuser ubuntu
 sudo -u postgres createdb local_database
