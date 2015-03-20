@@ -1,5 +1,5 @@
 from flask import Flask, request, make_response
-from flask.ext.sqlalchemy import SQLAlchemy, Session
+from flask.ext.sqlalchemy import SQLAlchemy
 from kazoo.client import KazooClient
 from kazoo.protocol.states import KazooState, EventType, KeeperState
 from kazoo.exceptions import NoNodeError
@@ -8,11 +8,8 @@ from random import shuffle
 from request_utils import send_request
 from multiprocessing import Process
 
-import os, string, json, time, logging, socket, heapq
-try:
-    import uwsgi
-except:
-    pass
+import os, string, json, time, logging, socket, heapq, uwsgi
+
 logging.basicConfig(level=logging.DEBUG)
 
 app = Flask(__name__)
@@ -349,10 +346,8 @@ def close_zk_connection():
     zk.stop()
     zk.close()
     logging.info('Stopped connection to ZooKeeper')
-try:
-    uwsgi.atexit = close_zk_connection
-except:
-    pass
+
+uwsgi.atexit = close_zk_connection
 
 def send_presence_to_zk():
     global IP, PORT, CURRENT_SERVER_ZNODE
