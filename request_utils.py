@@ -31,9 +31,9 @@ def send_request(method, url, payload=None, headers=None, reattempt=0):
         r = s.prepare_request(request)
 
     try:
-        response = s.send(r, verify=False, timeout=15)
+        response = s.send(r, verify=False, timeout=3)
     except (Timeout, SSLError) as e:
-        if reattempt < 10:
+        if reattempt < 1:
             return send_request(method, url, payload,
               reattempt=reattempt + 1)
         else:

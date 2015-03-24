@@ -160,6 +160,8 @@ def atomic_diffusion(sender_ip, sender_port, message, group, loopback, deliver):
         response = prepare_and_send_request(dest_ip, dest_port, 'POST',
           '/receive', payload=message)
         logging.info('response status: %s (%s)' % (response['code'], response['content']))
+        if response['code'] != 200:
+            return
 
     if deliver:
         logging.info('Storing processed message [%s]: %s' % (message['id'], json.dumps(message['message'])))
