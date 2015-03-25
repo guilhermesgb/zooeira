@@ -29,6 +29,8 @@ PORT = None #This server's port
 IS_LEADER = False #If this server is currently the leader
 KNOWN_SERVERS_LIST = [] #If this is the leader, the list of all known servers
 
+RECEIVED_MESSAGES = {}
+
 BROADCAST_MESSAGE_ACTION = '/broadcast'
 UPDATE_LEADER_ACTION = '/leader'
 
@@ -65,19 +67,19 @@ class ProcessedMessage(db.Model):
         return "ProcessedMessage %s" % self.mid
 
 #received messages are stored in a local log
-class ReceivedMessage(db.Model):
-
-    __tablename__ = 'received-messages'
-    id = db.Column(db.Integer, primary_key=True)
-    mid = db.Column(db.BigInteger, unique=True)
-    message = db.Column(db.Text)
-
-    def __init__(self, mid, message):
-        self.mid = mid
-        self.message = message
-
-    def __repr__(self):
-        return "ReceivedMessage %s" % self.mid
+#class ReceivedMessage(db.Model):
+#
+#    __tablename__ = 'received-messages'
+#    id = db.Column(db.Integer, primary_key=True)
+#    mid = db.Column(db.BigInteger, unique=True)
+#    message = db.Column(db.Text)
+#
+#    def __init__(self, mid, message):
+#        self.mid = mid
+#        self.message = message
+#
+#    def __repr__(self):
+#        return "ReceivedMessage %s" % self.mid
 
 class CurrentLeader(db.Model):
 
@@ -160,8 +162,8 @@ def atomic_diffusion(sender_ip, sender_port, message, group, loopback, deliver):
         response = prepare_and_send_request(dest_ip, dest_port, 'POST',
           '/receive', payload=message)
         logging.info('response status: %s (%s)' % (response['code'], response['content']))
-        if response['code'] != 200:
-            return
+#        if response['code'] != 200:
+#            return
 
     if deliver:
         logging.info('Storing processed message [%s]: %s' % (message['id'], json.dumps(message['message'])))
@@ -310,10 +312,11 @@ def receive_message():
         return make_response(json.dumps({'server':'message original sender port missing', 'code':'error'}), 200)
     message_os_port = int(message_os_port)
 
-    if ReceivedMessage.query\
-      .filter(ReceivedMessage.mid == message_id).count() == 0:
-
-        db.session.add(ReceivedMessage(message_id, json.dumps(message)))
+    if ( not message_id in RECEIVED_MESSAGES ):
+#    if ReceivedMessage.query\
+#      .filter(ReceivedMessage.mid == message_id).count() == 0:
+        RECEIVED_MESSAGES[message_id] = message
+#        db.session.add(ReceivedMessage(message_id, json.dumps(message)))
         db.session.commit()
         logging.info('Received message %s from %s:%d!' % (json.dumps(message), message_os_ip, message_os_port))
 
@@ -443,6 +446,8 @@ def determine_leader():
           + ('%010d' % seq_nums[seq_num_pos - 1]), watch=watch_callback)
 
 def prepare_server():
+    global RECEIVED_MESSAGES
+
     logging.info('Preparing server...')
     send_presence_to_zk()
 
@@ -451,9 +456,10 @@ def prepare_server():
 
     for entry in ProcessedMessage\
       .query.order_by(ProcessedMessage.mid).all():
-        db.session.add(ReceivedMessage(entry.mid, entry.message))
+#        db.session.add(ReceivedMessage(entry.mid, entry.message))
         message = json.loads(entry.message)
         heapq.heappush(messages, (entry.mid, message))
+        RECEIVED_MESSAGES[entry.mid] = message
     db.session.commit()
 
     message_znodes = zk.get_children(ZNODE_MESSAGES)
@@ -462,12 +468,14 @@ def prepare_server():
         data = zk.get(ZNODE_MESSAGES + '/' + message_znode)
         message = data[0]
         mid = data[1].creation_transaction_id
-        if ReceivedMessage.query\
-          .filter(ReceivedMessage.mid == mid).count() == 0:
+        if not mid in RECEIVED_MESSAGES:
+#        if ReceivedMessage.query\
+#          .filter(ReceivedMessage.mid == mid).count() == 0:
             db.session.add(ProcessedMessage(mid, message))
-            db.session.add(ReceivedMessage(mid, message))
+#            db.session.add(ReceivedMessage(mid, message))
             message = json.loads(message)
             heapq.heappush(messages, (mid, message))
+            RECEIVED_MESSAGES[mid] = message
     db.session.commit()
 
     while len(messages) > 0:
@@ -478,7 +486,7 @@ def prepare_server():
     determine_leader()
 
 db.create_all()
-ReceivedMessage.query.delete()
+#ReceivedMessage.query.delete()
 zk.start()
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=PORT, debug=True)
