@@ -12,7 +12,7 @@ class SSLAdapter(HTTPAdapter):
 
     def init_poolmanager(self, connections, maxsize, block=False):
         self.poolmanager = PoolManager(num_pools=connections,
-            maxsize=maxsize, block=block,
+            maxsize=3000, block=block,
             ssl_version=self.ssl_version)
 
 def send_request(method, url, payload=None, headers=None, reattempt=0):
