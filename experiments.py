@@ -23,16 +23,16 @@ def run(run_num):
     total = 0
     for x in range(NUM_MESSAGES):
         start = time.time()
+        message = 'Process %d sending it\'s message %d to %s (%s)' % (run_num, x, IPs[x % len(IPs)], P_CODE)
         message = {
-            'message': 'Test message (%d) to %s (%s_%d)' % (x, IPs[x % len(IPs)], P_CODE, run_num)
+            'message': message
         }
-        print "Sending message (%d) to %s (%s_%d)" % (x, IPs[x % len(IPs)], P_CODE, run_num)
         response = prepare_and_send_request(IPs[x % len(IPs)], PORT, 'POST', '/broadcast', payload=message)
         print 'response status: %s (%s)' % (response['code'], response['content'])
         partial = time.time() - start
         total = total + partial
     total = total / NUM_MESSAGES
-    f = open('experiments/%s-%d_%d' % (P_CODE, NUM_MESSAGES, run_num), 'w')
+    f = open('experiments/%s-%d_%d' % (P_CODE, (NUM_RUNS * NUM_MESSAGES), run_num), 'w')
     f.write(str(total))
     f.close()
 
@@ -41,7 +41,9 @@ for run_num in range(NUM_RUNS):
     p = Process(target=run, args=(run_num,))
     p.daemon = True
     p.start()
+    print "started process %d" % run_num
     ps.append(p)
 
 for p in ps:
     p.join()
+    print "one process finished"
